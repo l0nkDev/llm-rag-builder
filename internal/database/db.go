@@ -99,8 +99,8 @@ func SaveKnowledge(paper *models.Paper, knowledge *models.ExtractedKnowledge, ma
 	}
 	defer tx.Rollback(ctx)
 	paperQuery := `
-		INSERT INTO papers (paper_id, title, material_id, url, pdf_url, has_direct_pdf, file_size, pages, word_count, page_count, abstract, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'PROCESSED')
+		INSERT INTO papers (paper_id, title, material_id, url, pdf_url, has_direct_pdf, file_size, pages, word_count, page_count, abstract, status, year)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'PROCESSED', $12)
 		ON CONFLICT (paper_id) DO UPDATE SET 
 			status = 'PROCESSED',
 			abstract = EXCLUDED.abstract,
@@ -108,7 +108,7 @@ func SaveKnowledge(paper *models.Paper, knowledge *models.ExtractedKnowledge, ma
 			word_count = EXCLUDED.word_count,
 			page_count = EXCLUDED.page_count
 	`
-	_, err = tx.Exec(ctx, paperQuery, knowledge.PaperID, paper.Title, materialID, paper.URL, paper.PdfUrl, paper.HasDirectPDF, paper.FileSize, paper.Pages, knowledge.WordCount, knowledge.PageCount, knowledge.Abstract)
+	_, err = tx.Exec(ctx, paperQuery, knowledge.PaperID, paper.Title, materialID, paper.URL, paper.PdfUrl, paper.HasDirectPDF, paper.FileSize, paper.Pages, knowledge.WordCount, knowledge.PageCount, knowledge.Abstract, paper.Year)
 	if err != nil {
 		return fmt.Errorf("failed to insert paper: %w", err)
 	}
@@ -257,7 +257,7 @@ func UpdatePDFUrl(paperID, pdfUrl string) error {
 
 func GetBufferedPapers(limit int) ([]models.Paper, error) {
 	query := `
-		SELECT paper_id, title, material_id, pdf_url, url, has_direct_pdf 
+		SELECT paper_id, title, material_id, pdf_url, url, has_direct_pdf, year 
 		FROM papers 
 		WHERE status = 'BUFFERED' AND pdf_url IS NOT NULL AND pdf_url != ''
 		LIMIT $1
@@ -271,7 +271,7 @@ func GetBufferedPapers(limit int) ([]models.Paper, error) {
 	var papers []models.Paper
 	for rows.Next() {
 		var p models.Paper
-		if err := rows.Scan(&p.PaperID, &p.Title, &p.MaterialID, &p.PdfUrl, &p.URL, &p.HasDirectPDF); err != nil {
+		if err := rows.Scan(&p.PaperID, &p.Title, &p.MaterialID, &p.PdfUrl, &p.URL, &p.HasDirectPDF, &p.Year); err != nil {
 			return nil, err
 		}
 		papers = append(papers, p)
