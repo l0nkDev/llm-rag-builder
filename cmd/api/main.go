@@ -20,6 +20,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/ledongthuc/pdf"
 )
 
 // --- CONFIGURATION ---
@@ -35,6 +36,11 @@ var ErrRateLimited = errors.New("rate limited (429)")
 
 var researchQueue = make(chan models.ResearchRequest, 100)
 
+type InputMaterial struct {
+	Name     string   `json:"name"`
+	Keywords []string `json:"keywords"`
+}
+
 func main() {
 	if err := database.InitDB(); err != nil {
 		log.Fatalf("Database initialization failed: %v", err)
@@ -45,9 +51,8 @@ func main() {
 	e.Use(middleware.RequestLogger())
 	e.Use(middleware.Recover())
 
-	for i := 1; i <= 1; i++ {
-		go ingestionWorker(i, researchQueue)
-	}
+	go bufferConsumerWorker()
+	go discoveryWorker()
 
 	e.POST("/api/v1/research", triggerResearch)
 	e.POST("/api/v1/search", handleSearch)
@@ -113,74 +118,181 @@ func handleDiscovery(c echo.Context) error {
 	})
 }
 
-func ingestionWorker(id int, jobs <-chan models.ResearchRequest) {
-	currentWait := BaseWaitTime
-	for job := range jobs {
-		time.Sleep(currentWait)
-		log.Printf("[Worker %d] Researching: %s (%s)\n", id, job.Material, job.Product)
-		papers, err := scholar.DiscoverPapers(job.Material+" "+job.Product, 3, 0)
-		if errors.Is(err, scholar.ErrRateLimited) {
-			log.Printf("[Worker %d] 429 Hit! Backing off. New wait: %v\n", id, currentWait)
-			currentWait *= 2
-			if currentWait > MaxWaitTime {
-				currentWait = MaxWaitTime
-			}
-			go func(j models.ResearchRequest) { researchQueue <- j }(job)
-			continue
-		}
-		if err != nil {
-			log.Printf("[Worker %d] Fetch error: %v\n", id, err)
-			continue
-		}
-		if currentWait > BaseWaitTime {
-			currentWait -= 1 * time.Second
-		}
-		for _, paper := range papers {
-			log.Printf("[Worker %d] Found Paper: %s\n", id, paper.Title)
-			if paper.ExternalIds.DOI != "" {
-				log.Printf("   -> Resolving DOI via Unpaywall: %s\n", paper.ExternalIds.DOI)
-				pdfURL, err := scholar.GetRealPDFUrl(paper.ExternalIds.DOI)
-				if err != nil {
-					log.Printf("   -> Could not resolve direct PDF: %v\n", err)
-					continue
-				}
-				log.Printf("   -> Direct PDF Found! Downloading from: %s\n", pdfURL)
-				localPath, err := downloadPDF(pdfURL, paper.PaperID)
-				if err != nil {
-					log.Printf("   -> Download failed: %v\n", err)
-					continue
-				}
-				log.Printf("   -> Saved PDF: %s\n", localPath)
-				log.Printf("   -> Sending %s to GROBID on Ubuntu Server...\n", paper.PaperID)
-				knowledge, err := processWithGrobid(localPath, paper.PaperID)
-				if err != nil {
-					log.Printf("   -> GROBID extraction failed: %v\n", err)
-					continue
-				}
-				log.Printf("   -> SUCCESS! Extracted %d sections from %s.\n", len(knowledge.Sections), paper.Title)
-				log.Printf("   -> Generating local embeddings via Ollama...\n")
-				for i, sec := range knowledge.Sections {
-					textToEmbed := sec.Header + "\n" + sec.Body
-					emb, err := generateEmbedding(textToEmbed)
-					if err != nil {
-						log.Printf("   -> Failed to embed section '%s': %v\n", sec.Header, err)
-						continue
-					}
-					knowledge.Sections[i].Embedding = emb
-				}
-				log.Printf("   -> Saving to PostgreSQL...\n")
-				err = database.SaveKnowledge(&paper, knowledge, job.MaterialID)
-				if err != nil {
-					log.Printf("   -> DB Error: %v\n", err)
-				} else {
-					log.Printf("   -> DB Save Complete! ID: %s\n", paper.PaperID)
-				}
+func logTiming(action, item string, duration time.Duration) {
+	f, err := os.OpenFile("timing.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Printf("[Error] Failed to open timing.log: %v", err)
+		return
+	}
+	defer f.Close()
+	logger := log.New(f, "", log.LstdFlags)
+	logger.Printf("%s | ITEM: %s | DURATION: %v\n", action, item, duration)
+}
 
-			} else {
-				log.Printf("   -> No DOI available for resolving PDF.\n")
-			}
+func discoveryWorker() {
+	for {
+		log.Println("[DiscoveryWorker] Starting discovery cycle...")
+
+		file, err := os.Open("materials.json")
+		if err != nil {
+			log.Printf("[DiscoveryWorker] Failed to open materials.json: %v", err)
+			time.Sleep(60 * time.Minute)
+			continue
 		}
-		log.Printf("[Worker %d] Finished task for %s\n", id, job.Material)
+
+		bytesContent, err := io.ReadAll(file)
+		file.Close()
+		if err != nil {
+			log.Printf("[DiscoveryWorker] Failed to read materials.json: %v", err)
+			time.Sleep(60 * time.Minute)
+			continue
+		}
+
+		var materials []InputMaterial
+		if err := json.Unmarshal(bytesContent, &materials); err != nil {
+			log.Printf("[DiscoveryWorker] Failed to parse materials.json: %v", err)
+			time.Sleep(60 * time.Minute)
+			continue
+		}
+
+		for _, mat := range materials {
+			matID, err := database.SaveMaterial(mat.Name, mat.Keywords)
+			if err != nil {
+				log.Printf("[DiscoveryWorker] Failed to save material %s: %v", mat.Name, err)
+				continue
+			}
+
+			target := 25
+			existingCount, err := database.CountUnpaywalledPapers(matID)
+			if err != nil {
+				continue
+			}
+
+			unpaywalledFound := existingCount
+			if unpaywalledFound >= target {
+				continue
+			}
+
+			log.Printf("[DiscoveryWorker] Material '%s' needs %d more papers. Discovering...", mat.Name, target-unpaywalledFound)
+			startMat := time.Now()
+
+			for _, keyword := range mat.Keywords {
+				if unpaywalledFound >= target {
+					break
+				}
+				offset := 0
+				limit := 50
+				for {
+					if unpaywalledFound >= target {
+						break
+					}
+					papers, err := scholar.DiscoverPapers(keyword, limit, offset)
+					if err != nil {
+						time.Sleep(2 * time.Second)
+						break
+					}
+					if len(papers) == 0 {
+						time.Sleep(2 * time.Second)
+						break
+					}
+					for _, paper := range papers {
+						if unpaywalledFound >= target {
+							break
+						}
+						if paper.HasDirectPDF {
+							inserted, err := database.SavePaperBuffer(&paper, matID)
+							if err == nil && inserted {
+								unpaywalledFound++
+							}
+						}
+					}
+					offset += limit
+					time.Sleep(2 * time.Second)
+				}
+			}
+			logTiming("BUFFER_MATERIAL", mat.Name, time.Since(startMat))
+		}
+
+		log.Println("[DiscoveryWorker] Discovery cycle complete. Sleeping for 1 hour.")
+		time.Sleep(60 * time.Minute)
+	}
+}
+
+func bufferConsumerWorker() {
+	for {
+		papers, err := database.GetBufferedPapers(5)
+		if err != nil {
+			log.Printf("[BufferWorker] Failed to fetch buffered papers: %v", err)
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		if len(papers) == 0 {
+			time.Sleep(30 * time.Second)
+			continue
+		}
+
+		for _, paper := range papers {
+			startPaper := time.Now()
+			log.Printf("[BufferWorker] Processing Buffered Paper: %s", paper.Title)
+			
+			localPath, err := downloadPDF(paper.PdfUrl, paper.PaperID)
+			if err != nil {
+				log.Printf("   -> Download failed: %v", err)
+				continue
+			}
+			log.Printf("   -> Saved PDF: %s", localPath)
+
+			// Get exact file size
+			if stat, err := os.Stat(localPath); err == nil {
+				paper.FileSize = stat.Size()
+			}
+
+			// Get exact page count
+			paper.PageCount = 0
+			if f, r, err := pdf.Open(localPath); err == nil {
+				paper.PageCount = r.NumPage()
+				f.Close()
+			}
+
+			log.Printf("   -> Sending %s to GROBID on Ubuntu Server...", paper.PaperID)
+			knowledge, err := processWithGrobid(localPath, paper.PaperID)
+			if err != nil {
+				log.Printf("   -> GROBID extraction failed: %v", err)
+				continue
+			}
+
+			// Calculate word count
+			wordCount := len(bytes.Fields([]byte(knowledge.Abstract)))
+			for _, sec := range knowledge.Sections {
+				wordCount += len(bytes.Fields([]byte(sec.Body)))
+			}
+			knowledge.WordCount = wordCount
+			knowledge.PageCount = paper.PageCount
+
+			log.Printf("   -> SUCCESS! Extracted %d sections from %s (%d pages, %d words).", len(knowledge.Sections), paper.Title, paper.PageCount, wordCount)
+			log.Printf("   -> Generating local embeddings via Ollama...")
+			
+			for i, sec := range knowledge.Sections {
+				textToEmbed := sec.Header + "\n" + sec.Body
+				emb, err := generateEmbedding(textToEmbed)
+				if err != nil {
+					log.Printf("   -> Failed to embed section '%s': %v", sec.Header, err)
+					continue
+				}
+				knowledge.Sections[i].Embedding = emb
+			}
+			
+			log.Printf("   -> Saving to PostgreSQL...")
+			err = database.SaveKnowledge(&paper, knowledge, paper.MaterialID)
+			if err != nil {
+				log.Printf("   -> DB Error: %v", err)
+			} else {
+				log.Printf("   -> DB Save Complete! ID: %s", paper.PaperID)
+			}
+			
+			logTiming("PROCESS_PAPER", paper.PaperID, time.Since(startPaper))
+		}
 	}
 }
 

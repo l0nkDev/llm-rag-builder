@@ -18,6 +18,7 @@ type SemanticScholarResponse struct {
 type Paper struct {
 	PaperID       string        `json:"paperId"`
 	Title         string        `json:"title"`
+	MaterialID    int           `json:"materialId"`
 	Year          int64         `json:"year"`
 	Abstract      string        `json:"abstract"`
 	URL           string        `json:"url"`
@@ -28,6 +29,8 @@ type Paper struct {
 	HasDirectPDF  bool          `json:"hasDirectPdf"`
 	FileSize      int64         `json:"fileSize"`
 	PdfUrl        string        `json:"pdfUrl"`
+	WordCount     int           `json:"wordCount"`
+	PageCount     int           `json:"pageCount"`
 }
 
 type Author struct {
@@ -79,9 +82,11 @@ type TEIDivision struct {
 }
 
 type ExtractedKnowledge struct {
-	PaperID  string
-	Abstract string
-	Sections []Section
+	PaperID   string
+	Abstract  string
+	WordCount int
+	PageCount int
+	Sections  []Section
 }
 
 type Section struct {
