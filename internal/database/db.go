@@ -9,11 +9,11 @@ import (
 
 	"llm-rag-builder/internal/models"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 )
 
-var dbConn *pgx.Conn
+var dbPool *pgxpool.Pool
 
 func InitDB() error {
 	if err := godotenv.Load(); err != nil {
@@ -25,11 +25,11 @@ func InitDB() error {
 		return fmt.Errorf("DATABASE_URL is not set")
 	}
 
-	conn, err := pgx.Connect(context.Background(), dbURL)
+	conn, err := pgxpool.New(context.Background(), dbURL)
 	if err != nil {
-		return fmt.Errorf("unable to connect to database: %w", err)
+		return fmt.Errorf("unable to connect to database pool: %w", err)
 	}
-	dbConn = conn
+	dbPool = conn
 
 	schema := `
 	CREATE TABLE IF NOT EXISTS materials (
@@ -75,7 +75,7 @@ func InitDB() error {
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	`
-	_, err = dbConn.Exec(context.Background(), schema)
+	_, err = dbPool.Exec(context.Background(), schema)
 	if err != nil {
 		return fmt.Errorf("failed to create tables: %w", err)
 	}
@@ -85,15 +85,15 @@ func InitDB() error {
 }
 
 func CloseDB() {
-	if dbConn != nil {
-		dbConn.Close(context.Background())
+	if dbPool != nil {
+		dbPool.Close()
 	}
 }
 
 func SaveKnowledge(paper *models.Paper, knowledge *models.ExtractedKnowledge, materialID int) error {
 	ctx := context.Background()
 
-	tx, err := dbConn.Begin(ctx)
+	tx, err := dbPool.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func SearchDatabase(queryEmbedding []float32) ([]models.SearchResult, error) {
 		LIMIT 3;
 	`
 
-	rows, err := dbConn.Query(context.Background(), sqlQuery, queryStr)
+	rows, err := dbPool.Query(context.Background(), sqlQuery, queryStr)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +168,7 @@ func SaveMaterial(name string, keywords []string) (int, error) {
 		ON CONFLICT (name) DO UPDATE SET keywords = EXCLUDED.keywords
 		RETURNING id
 	`
-	err := dbConn.QueryRow(context.Background(), query, name, string(kwBytes)).Scan(&id)
+	err := dbPool.QueryRow(context.Background(), query, name, string(kwBytes)).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("failed to save material: %w", err)
 	}
@@ -177,7 +177,7 @@ func SaveMaterial(name string, keywords []string) (int, error) {
 
 func SavePaperBuffer(paper *models.Paper, materialID int) (bool, error) {
 	ctx := context.Background()
-	tx, err := dbConn.Begin(ctx)
+	tx, err := dbPool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -226,13 +226,13 @@ func SavePaperBuffer(paper *models.Paper, materialID int) (bool, error) {
 func CountUnpaywalledPapers(materialID int) (int, error) {
 	var count int
 	query := `SELECT COUNT(*) FROM papers WHERE material_id = $1 AND has_direct_pdf = true`
-	err := dbConn.QueryRow(context.Background(), query, materialID).Scan(&count)
+	err := dbPool.QueryRow(context.Background(), query, materialID).Scan(&count)
 	return count, err
 }
 
 func GetPapersMissingPDFUrl() ([]string, error) {
 	query := `SELECT paper_id FROM papers WHERE (pdf_url IS NULL OR pdf_url = '') AND has_direct_pdf = true`
-	rows, err := dbConn.Query(context.Background(), query)
+	rows, err := dbPool.Query(context.Background(), query)
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +251,7 @@ func GetPapersMissingPDFUrl() ([]string, error) {
 
 func UpdatePDFUrl(paperID, pdfUrl string) error {
 	query := `UPDATE papers SET pdf_url = $1 WHERE paper_id = $2`
-	_, err := dbConn.Exec(context.Background(), query, pdfUrl, paperID)
+	_, err := dbPool.Exec(context.Background(), query, pdfUrl, paperID)
 	return err
 }
 
@@ -262,7 +262,7 @@ func GetBufferedPapers(limit int) ([]models.Paper, error) {
 		WHERE status = 'BUFFERED' AND pdf_url IS NOT NULL AND pdf_url != ''
 		LIMIT $1
 	`
-	rows, err := dbConn.Query(context.Background(), query, limit)
+	rows, err := dbPool.Query(context.Background(), query, limit)
 	if err != nil {
 		return nil, err
 	}
