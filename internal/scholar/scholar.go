@@ -48,9 +48,15 @@ func DiscoverPapers(queryStr string, limit int, offset int) ([]models.Paper, err
 		if paper.ExternalIds.DOI != "" {
 			pdfURL, err := GetRealPDFUrl(paper.ExternalIds.DOI)
 			if err == nil && pdfURL != "" {
-				paper.HasDirectPDF = true
-				paper.FileSize = GetPDFSize(pdfURL)
-				paper.PdfUrl = pdfURL
+				size, err := GetPDFSize(pdfURL)
+				if err == nil {
+					paper.HasDirectPDF = true
+					paper.FileSize = size
+					paper.PdfUrl = pdfURL
+				} else {
+					// Log that the unpaywall link was dead
+					fmt.Printf("   -> Unpaywall link %s returned error: %v\n", pdfURL, err)
+				}
 			}
 		}
 	}
@@ -58,18 +64,24 @@ func DiscoverPapers(queryStr string, limit int, offset int) ([]models.Paper, err
 	return result.Data, nil
 }
 
-func GetPDFSize(pdfURL string) int64 {
+func GetPDFSize(pdfURL string) (int64, error) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequest("HEAD", pdfURL, nil)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	defer resp.Body.Close()
-	return resp.ContentLength
+
+	// Some servers don't like HEAD requests, but most PDF hosts should return 200
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusMethodNotAllowed {
+		return 0, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	return resp.ContentLength, nil
 }
 
 func GetRealPDFUrl(doi string) (string, error) {
