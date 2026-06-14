@@ -218,7 +218,12 @@ func downloadPDF(targetURL string, paperID string) (string, error) {
 	}
 	filePath := filepath.Join(DownloadDir, paperID+".pdf")
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(targetURL)
+	req, err := http.NewRequest("GET", targetURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
