@@ -32,6 +32,8 @@ func InitDB() error {
 	dbPool = conn
 
 	schema := `
+	CREATE EXTENSION IF NOT EXISTS vector;
+
 	CREATE TABLE IF NOT EXISTS materials (
 		id SERIAL PRIMARY KEY,
 		name TEXT UNIQUE NOT NULL,
@@ -71,7 +73,7 @@ func InitDB() error {
 		paper_id TEXT REFERENCES papers(paper_id) ON DELETE CASCADE,
 		header TEXT,
 		body TEXT,
-		-- Later, we will add 'embedding vector(1536)' here!
+		embedding vector(768),
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 	`
@@ -255,14 +257,27 @@ func UpdatePDFUrl(paperID, pdfUrl string) error {
 	return err
 }
 
-func GetBufferedPapers(limit int) ([]models.Paper, error) {
+func GetNextBufferedMaterial() (int, string, error) {
+	query := `
+		SELECT m.id, m.name
+		FROM materials m
+		JOIN papers p ON m.id = p.material_id
+		WHERE p.status = 'BUFFERED' AND p.pdf_url IS NOT NULL AND p.pdf_url != ''
+		LIMIT 1
+	`
+	var id int
+	var name string
+	err := dbPool.QueryRow(context.Background(), query).Scan(&id, &name)
+	return id, name, err
+}
+
+func GetBufferedPapersForMaterial(materialID int) ([]models.Paper, error) {
 	query := `
 		SELECT paper_id, title, material_id, pdf_url, url, has_direct_pdf, year 
 		FROM papers 
-		WHERE status = 'BUFFERED' AND pdf_url IS NOT NULL AND pdf_url != ''
-		LIMIT $1
+		WHERE status = 'BUFFERED' AND pdf_url IS NOT NULL AND pdf_url != '' AND material_id = $1
 	`
-	rows, err := dbPool.Query(context.Background(), query, limit)
+	rows, err := dbPool.Query(context.Background(), query, materialID)
 	if err != nil {
 		return nil, err
 	}

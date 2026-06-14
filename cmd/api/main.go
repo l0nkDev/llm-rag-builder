@@ -220,21 +220,23 @@ func discoveryWorker() {
 
 func bufferConsumerWorker() {
 	for {
-		papers, err := database.GetBufferedPapers(5)
+		matID, matName, err := database.GetNextBufferedMaterial()
 		if err != nil {
-			log.Printf("[BufferWorker] Failed to fetch buffered papers: %v", err)
-			time.Sleep(10 * time.Second)
-			continue
-		}
-
-		if len(papers) == 0 {
 			time.Sleep(30 * time.Second)
 			continue
 		}
 
+		papers, err := database.GetBufferedPapersForMaterial(matID)
+		if err != nil || len(papers) == 0 {
+			time.Sleep(30 * time.Second)
+			continue
+		}
+
+		startMatProcess := time.Now()
+
 		for _, paper := range papers {
 			startPaper := time.Now()
-			log.Printf("[BufferWorker] Processing Buffered Paper: %s", paper.Title)
+			log.Printf("[BufferWorker] Processing Buffered Paper for '%s': %s", matName, paper.Title)
 			
 			localPath, err := downloadPDF(paper.PdfUrl, paper.PaperID)
 			if err != nil {
@@ -291,8 +293,10 @@ func bufferConsumerWorker() {
 				log.Printf("   -> DB Save Complete! ID: %s", paper.PaperID)
 			}
 			
-			logTiming("PROCESS_PAPER", paper.PaperID, time.Since(startPaper))
+			logTiming("PROCESS_PAPER", fmt.Sprintf("[%s] %s", matName, paper.Title), time.Since(startPaper))
 		}
+
+		logTiming("PROCESS_MATERIAL", matName, time.Since(startMatProcess))
 	}
 }
 
