@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"llm-rag-builder/internal/models"
+
+	"github.com/imroc/req/v3"
 )
 
 var ErrRateLimited = fmt.Errorf("rate limited (429)")
@@ -65,13 +67,11 @@ func DiscoverPapers(queryStr string, limit int, offset int) ([]models.Paper, err
 }
 
 func GetPDFSize(pdfURL string) (int64, error) {
-	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequest("HEAD", pdfURL, nil)
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	resp, err := client.Do(req)
+	client := req.C().
+		ImpersonateChrome().
+		SetTimeout(10 * time.Second)
+
+	resp, err := client.R().Head(pdfURL)
 	if err != nil {
 		return 0, err
 	}

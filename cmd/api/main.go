@@ -20,6 +20,7 @@ import (
 	"llm-rag-builder/internal/scholar"
 	"llm-rag-builder/internal/utils"
 
+	"github.com/imroc/req/v3"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/ledongthuc/pdf"
@@ -217,13 +218,12 @@ func downloadPDF(targetURL string, paperID string) (string, error) {
 		return "", err
 	}
 	filePath := filepath.Join(DownloadDir, paperID+".pdf")
-	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequest("GET", targetURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	resp, err := client.Do(req)
+	
+	client := req.C().
+		ImpersonateChrome().
+		SetTimeout(30 * time.Second)
+
+	resp, err := client.R().Get(targetURL)
 	if err != nil {
 		return "", err
 	}
