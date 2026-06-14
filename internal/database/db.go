@@ -227,7 +227,7 @@ func SavePaperBuffer(paper *models.Paper, materialID int) (bool, error) {
 
 func CountUnpaywalledPapers(materialID int) (int, error) {
 	var count int
-	query := `SELECT COUNT(*) FROM papers WHERE material_id = $1 AND has_direct_pdf = true`
+	query := `SELECT COUNT(*) FROM papers WHERE material_id = $1 AND has_direct_pdf = true AND status != 'FAILED'`
 	err := dbPool.QueryRow(context.Background(), query, materialID).Scan(&count)
 	return count, err
 }
