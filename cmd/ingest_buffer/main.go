@@ -10,6 +10,7 @@ import (
 
 func main() {
 	filePath := flag.String("file", "", "Path to the JSON file containing materials and keywords")
+	_ = flag.Int("limit", 50, "Number of papers to fetch per keyword (deprecated but kept for compatibility)")
 	flag.Parse()
 
 	if *filePath == "" {
