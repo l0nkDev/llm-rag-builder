@@ -241,6 +241,7 @@ func bufferConsumerWorker() {
 			localPath, err := downloadPDF(paper.PdfUrl, paper.PaperID)
 			if err != nil {
 				log.Printf("   -> Download failed: %v", err)
+				database.MarkPaperFailed(paper.PaperID)
 				continue
 			}
 			log.Printf("   -> Saved PDF: %s", localPath)
@@ -261,6 +262,7 @@ func bufferConsumerWorker() {
 			knowledge, err := processWithGrobid(localPath, paper.PaperID)
 			if err != nil {
 				log.Printf("   -> GROBID extraction failed: %v", err)
+				database.MarkPaperFailed(paper.PaperID)
 				continue
 			}
 

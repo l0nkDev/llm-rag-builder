@@ -257,6 +257,12 @@ func UpdatePDFUrl(paperID, pdfUrl string) error {
 	return err
 }
 
+func MarkPaperFailed(paperID string) error {
+	query := `UPDATE papers SET status = 'FAILED' WHERE paper_id = $1`
+	_, err := dbPool.Exec(context.Background(), query, paperID)
+	return err
+}
+
 func GetNextBufferedMaterial() (int, string, error) {
 	query := `
 		SELECT m.id, m.name
