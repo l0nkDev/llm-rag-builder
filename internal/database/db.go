@@ -37,7 +37,8 @@ func InitDB() error {
 	CREATE TABLE IF NOT EXISTS materials (
 		id SERIAL PRIMARY KEY,
 		name TEXT UNIQUE NOT NULL,
-		keywords JSONB NOT NULL
+		keywords JSONB NOT NULL,
+		exhausted BOOLEAN DEFAULT FALSE
 	);
 
 	CREATE TABLE IF NOT EXISTS papers (
@@ -49,7 +50,6 @@ func InitDB() error {
 		pdf_url TEXT,
 		has_direct_pdf BOOLEAN DEFAULT FALSE,
 		file_size BIGINT,
-		pages TEXT,
 		word_count INT,
 		page_count INT,
 		abstract TEXT,
@@ -101,16 +101,16 @@ func SaveKnowledge(paper *models.Paper, knowledge *models.ExtractedKnowledge, ma
 	}
 	defer tx.Rollback(ctx)
 	paperQuery := `
-		INSERT INTO papers (paper_id, title, material_id, url, pdf_url, has_direct_pdf, file_size, pages, word_count, page_count, abstract, status, year)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'PROCESSED', $12)
+		INSERT INTO papers (paper_id, title, material_id, url, pdf_url, has_direct_pdf, file_size, word_count, page_count, abstract, status, year)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'PROCESSED', $11)
 		ON CONFLICT (paper_id) DO UPDATE SET 
 			status = 'PROCESSED',
-			abstract = EXCLUDED.abstract,
+			abstract = COALESCE(NULLIF(EXCLUDED.abstract, ''), papers.abstract),
 			file_size = EXCLUDED.file_size,
 			word_count = EXCLUDED.word_count,
 			page_count = EXCLUDED.page_count
 	`
-	_, err = tx.Exec(ctx, paperQuery, knowledge.PaperID, paper.Title, materialID, paper.URL, paper.PdfUrl, paper.HasDirectPDF, paper.FileSize, paper.Pages, knowledge.WordCount, knowledge.PageCount, knowledge.Abstract, paper.Year)
+	_, err = tx.Exec(ctx, paperQuery, knowledge.PaperID, paper.Title, materialID, paper.URL, paper.PdfUrl, paper.HasDirectPDF, paper.FileSize, knowledge.WordCount, knowledge.PageCount, knowledge.Abstract, paper.Year)
 	if err != nil {
 		return fmt.Errorf("failed to insert paper: %w", err)
 	}
@@ -167,7 +167,9 @@ func SaveMaterial(name string, keywords []string) (int, error) {
 	query := `
 		INSERT INTO materials (name, keywords)
 		VALUES ($1, $2)
-		ON CONFLICT (name) DO UPDATE SET keywords = EXCLUDED.keywords
+		ON CONFLICT (name) DO UPDATE SET 
+			keywords = EXCLUDED.keywords,
+			exhausted = CASE WHEN materials.keywords::text != EXCLUDED.keywords::text THEN FALSE ELSE materials.exhausted END
 		RETURNING id
 	`
 	err := dbPool.QueryRow(context.Background(), query, name, string(kwBytes)).Scan(&id)
@@ -175,6 +177,19 @@ func SaveMaterial(name string, keywords []string) (int, error) {
 		return 0, fmt.Errorf("failed to save material: %w", err)
 	}
 	return id, nil
+}
+
+func IsMaterialExhausted(materialID int) (bool, error) {
+	var exhausted bool
+	query := `SELECT exhausted FROM materials WHERE id = $1`
+	err := dbPool.QueryRow(context.Background(), query, materialID).Scan(&exhausted)
+	return exhausted, err
+}
+
+func MarkMaterialExhausted(materialID int) error {
+	query := `UPDATE materials SET exhausted = TRUE WHERE id = $1`
+	_, err := dbPool.Exec(context.Background(), query, materialID)
+	return err
 }
 
 func SavePaperBuffer(paper *models.Paper, materialID int) (bool, error) {
@@ -187,11 +202,11 @@ func SavePaperBuffer(paper *models.Paper, materialID int) (bool, error) {
 
 	// Upsert Paper
 	paperQuery := `
-		INSERT INTO papers (paper_id, title, material_id, url, pdf_url, has_direct_pdf, file_size, pages, abstract, status, year)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'BUFFERED', $10)
+		INSERT INTO papers (paper_id, title, material_id, url, pdf_url, has_direct_pdf, file_size, abstract, status, year)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'BUFFERED', $9)
 		ON CONFLICT (paper_id) DO NOTHING
 	`
-	tag, err := tx.Exec(ctx, paperQuery, paper.PaperID, paper.Title, materialID, paper.URL, paper.PdfUrl, paper.HasDirectPDF, paper.FileSize, paper.Pages, paper.Abstract, paper.Year)
+	tag, err := tx.Exec(ctx, paperQuery, paper.PaperID, paper.Title, materialID, paper.URL, paper.PdfUrl, paper.HasDirectPDF, paper.FileSize, paper.Abstract, paper.Year)
 	if err != nil {
 		return false, fmt.Errorf("failed to insert buffered paper: %w", err)
 	}

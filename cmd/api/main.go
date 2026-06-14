@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"llm-rag-builder/internal/database"
+	"llm-rag-builder/internal/discovery"
 	"llm-rag-builder/internal/models"
 	"llm-rag-builder/internal/scholar"
+	"llm-rag-builder/internal/utils"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -117,102 +119,10 @@ func handleDiscovery(c echo.Context) error {
 		"papers": papers,
 	})
 }
-
-func logTiming(action, item string, duration time.Duration) {
-	f, err := os.OpenFile("timing.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Printf("[Error] Failed to open timing.log: %v", err)
-		return
-	}
-	defer f.Close()
-	logger := log.New(f, "", log.LstdFlags)
-	logger.Printf("%s | ITEM: %s | DURATION: %v\n", action, item, duration)
-}
-
 func discoveryWorker() {
 	for {
 		log.Println("[DiscoveryWorker] Starting discovery cycle...")
-
-		file, err := os.Open("materials.json")
-		if err != nil {
-			log.Printf("[DiscoveryWorker] Failed to open materials.json: %v", err)
-			time.Sleep(60 * time.Minute)
-			continue
-		}
-
-		bytesContent, err := io.ReadAll(file)
-		file.Close()
-		if err != nil {
-			log.Printf("[DiscoveryWorker] Failed to read materials.json: %v", err)
-			time.Sleep(60 * time.Minute)
-			continue
-		}
-
-		var materials []InputMaterial
-		if err := json.Unmarshal(bytesContent, &materials); err != nil {
-			log.Printf("[DiscoveryWorker] Failed to parse materials.json: %v", err)
-			time.Sleep(60 * time.Minute)
-			continue
-		}
-
-		for _, mat := range materials {
-			matID, err := database.SaveMaterial(mat.Name, mat.Keywords)
-			if err != nil {
-				log.Printf("[DiscoveryWorker] Failed to save material %s: %v", mat.Name, err)
-				continue
-			}
-
-			target := 25
-			existingCount, err := database.CountUnpaywalledPapers(matID)
-			if err != nil {
-				continue
-			}
-
-			unpaywalledFound := existingCount
-			if unpaywalledFound >= target {
-				continue
-			}
-
-			log.Printf("[DiscoveryWorker] Material '%s' needs %d more papers. Discovering...", mat.Name, target-unpaywalledFound)
-			startMat := time.Now()
-
-			for _, keyword := range mat.Keywords {
-				if unpaywalledFound >= target {
-					break
-				}
-				offset := 0
-				limit := 50
-				for {
-					if unpaywalledFound >= target {
-						break
-					}
-					papers, err := scholar.DiscoverPapers(keyword, limit, offset)
-					if err != nil {
-						time.Sleep(2 * time.Second)
-						break
-					}
-					if len(papers) == 0 {
-						time.Sleep(2 * time.Second)
-						break
-					}
-					for _, paper := range papers {
-						if unpaywalledFound >= target {
-							break
-						}
-						if paper.HasDirectPDF {
-							inserted, err := database.SavePaperBuffer(&paper, matID)
-							if err == nil && inserted {
-								unpaywalledFound++
-							}
-						}
-					}
-					offset += limit
-					time.Sleep(2 * time.Second)
-				}
-			}
-			logTiming("BUFFER_MATERIAL", mat.Name, time.Since(startMat))
-		}
-
+		discovery.RunDiscovery("materials.json", 25)
 		log.Println("[DiscoveryWorker] Discovery cycle complete. Sleeping for 1 hour.")
 		time.Sleep(60 * time.Minute)
 	}
@@ -295,10 +205,10 @@ func bufferConsumerWorker() {
 				log.Printf("   -> DB Save Complete! ID: %s", paper.PaperID)
 			}
 			
-			logTiming("PROCESS_PAPER", fmt.Sprintf("[%s] %s", matName, paper.Title), time.Since(startPaper))
+			utils.LogTiming("PROCESS_PAPER", fmt.Sprintf("[%s] %s", matName, paper.Title), time.Since(startPaper))
 		}
 
-		logTiming("PROCESS_MATERIAL", matName, time.Since(startMatProcess))
+		utils.LogTiming("PROCESS_MATERIAL", matName, time.Since(startMatProcess))
 	}
 }
 

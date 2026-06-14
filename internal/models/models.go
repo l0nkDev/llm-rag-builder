@@ -25,7 +25,6 @@ type Paper struct {
 	OpenAccessPdf OpenAccessPdf `json:"openAccessPdf"`
 	ExternalIds   ExternalIds   `json:"externalIds"`
 	Authors       []Author      `json:"authors"`
-	Pages         string        `json:"pages"`
 	HasDirectPDF  bool          `json:"hasDirectPdf"`
 	FileSize      int64         `json:"fileSize"`
 	PdfUrl        string        `json:"pdfUrl"`
