@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"llm-rag-builder/internal/database"
@@ -173,6 +174,13 @@ func bufferConsumerWorker() {
 			knowledge, err := processWithGrobid(localPath, paper.PaperID)
 			if err != nil {
 				log.Printf("   -> GROBID extraction failed: %v", err)
+				// If GROBID completely crashed or the network failed, do NOT mark as FAILED.
+				// We pause the worker for 1 minute to let GROBID recover and break out of the loop.
+				if strings.Contains(err.Error(), "GROBID network error") {
+					log.Println("   -> [CRITICAL] GROBID seems to be offline or crashed. Pausing processing for 1 minute...")
+					time.Sleep(1 * time.Minute)
+					break // Exits the paper loop, paper remains BUFFERED
+				}
 				database.MarkPaperFailed(paper.PaperID)
 				continue
 			}
